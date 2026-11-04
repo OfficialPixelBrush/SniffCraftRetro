@@ -125,7 +125,13 @@ if(SNIFFCRAFT_WITH_ENCRYPTION)
     target_link_libraries(${PROJECT_NAME} PUBLIC OpenSSL::Crypto)
     target_compile_definitions(${PROJECT_NAME} PUBLIC USE_ENCRYPTION=1)
     if(WIN32)
-        target_link_libraries(${PROJECT_NAME} PRIVATE crypt32)
+        target_link_libraries(${PROJECT_NAME} PUBLIC crypt32)
+    endif()
+    if(APPLE)
+        target_link_libraries(${PROJECT_NAME} PUBLIC
+            "-framework Security"
+            "-framework CoreFoundation"
+        )
     endif()
 endif(SNIFFCRAFT_WITH_ENCRYPTION)
 
