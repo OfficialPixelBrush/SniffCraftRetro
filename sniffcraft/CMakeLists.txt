@@ -23,6 +23,7 @@ set(sniffcraft_PUBLIC_HDR
 
     ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/Authentifier.hpp
     ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/AESEncrypter.hpp
+    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/Https.hpp
     ../3rdparty/botcraft/botcraft/include/botcraft/Network/LastSeenMessagesTracker.hpp
 
     ../3rdparty/botcraft/botcraft/include/botcraft/Utilities/Logger.hpp
@@ -48,6 +49,7 @@ set(sniffcraft_SRC
 
     ../3rdparty/botcraft/botcraft/src/Network/Authentifier.cpp
     ../3rdparty/botcraft/botcraft/src/Network/AESEncrypter.cpp
+    ../3rdparty/botcraft/botcraft/src/Network/Https.cpp
     ../3rdparty/botcraft/botcraft/src/Network/LastSeenMessagesTracker.cpp
     ../3rdparty/botcraft/botcraft/src/Utilities/Logger.cpp
     ../3rdparty/botcraft/botcraft/src/Utilities/StringUtilities.cpp
@@ -122,6 +124,9 @@ if(SNIFFCRAFT_WITH_ENCRYPTION)
     target_link_libraries(${PROJECT_NAME} PUBLIC OpenSSL::SSL)
     target_link_libraries(${PROJECT_NAME} PUBLIC OpenSSL::Crypto)
     target_compile_definitions(${PROJECT_NAME} PUBLIC USE_ENCRYPTION=1)
+    if(WIN32)
+        target_link_libraries(${PROJECT_NAME} PRIVATE crypt32)
+    endif()
 endif(SNIFFCRAFT_WITH_ENCRYPTION)
 
 # Add threads support
