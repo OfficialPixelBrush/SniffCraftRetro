@@ -1,16 +1,13 @@
 #include "sniffcraft/conf.hpp"
 #include "sniffcraft/Logger.hpp"
 #include "sniffcraft/MinecraftProxy.hpp"
-#include "sniffcraft/PacketUtilities.hpp"
+#include "sniffcraft/Protocol.hpp"
 #include "sniffcraft/server.hpp"
-
-#include <botcraft/Network/DNS/DNSMessage.hpp>
-#include <botcraft/Network/DNS/DNSSrvData.hpp>
-#include <botcraft/Utilities/StringUtilities.hpp>
 
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <algorithm>
 #include <iostream>
 #include <utility>
 
@@ -28,13 +25,12 @@ constexpr int base_window_width = 1200;
 Server::Server()
 {
     std::shared_lock<std::shared_mutex> conf_lock(Conf::conf_mutex);
-    const ProtocolCraft::Json::Value conf = Conf::LoadConf();
+    const Json::Value conf = Conf::LoadConf();
     client_port = conf[Conf::local_port_key].get_number<unsigned short>();
     server_address = conf[Conf::server_address_key].get_string();
     ResolveIpPortFromAddress();
 
     proxies_cleaning_thread = std::thread(&Server::CleanProxies, this);
-    is_next_connection_transfer = false;
 }
 
 Server::~Server()
@@ -91,18 +87,7 @@ void Server::handle_accept(BaseProxy* new_proxy, const asio::error_code& ec)
 {
     if (!ec)
     {
-        std::optional<std::string> proxy_start_return;
-        if (is_next_connection_transfer)
-        {
-            is_next_connection_transfer = false;
-            proxy_start_return = new_proxy->Start(transfer_ip, transfer_port);
-            transfer_ip = "";
-            transfer_port = 0;
-        }
-        else
-        {
-            proxy_start_return = new_proxy->Start(server_ip, server_port);
-        }
+        const std::optional<std::string> proxy_start_return = new_proxy->Start(server_ip, server_port);
         if (proxy_start_return.has_value())
         {
             std::cerr << "Failed to start new proxy: " << proxy_start_return.value() << std::endl;
@@ -130,118 +115,45 @@ void Server::handle_accept(BaseProxy* new_proxy, const asio::error_code& ec)
 
 void Server::ResolveIpPortFromAddress()
 {
-    std::string addressOnly;
+    // Beta 1.7.3 clients don't do any SRV DNS lookup, the address is always host[:port]
+    server_port = 25565;
+    server_ip = server_address;
 
-    const std::vector<std::string> splitted_port = Botcraft::Utilities::SplitString(server_address, ':');
-    // address:port format
-    if (splitted_port.size() > 1)
+    // Only one ':' means "host:port", more means a raw IPv6 address (or [IPv6]:port)
+    const size_t last_colon = server_address.rfind(':');
+    if (last_colon == std::string::npos)
     {
-        try
-        {
-            server_port = std::stoi(splitted_port[1]);
-            server_ip = splitted_port[0];
-            return;
-        }
-        catch (const std::exception&)
-        {
-            server_port = 0;
-        }
-        addressOnly = splitted_port[0];
-    }
-    // address only format
-    else
-    {
-        addressOnly = server_address;
-        server_port = 0;
-    }
-
-    // If port is unknown we first try a SRV DNS lookup
-    std::cout << "Performing SRV DNS lookup on " << "_minecraft._tcp." << addressOnly << " to find an endpoint" << std::endl;
-    asio::ip::udp::socket udp_socket(io_context);
-
-    // Create the query
-    Botcraft::DNSMessage query;
-    // Random identification
-    query.SetIdentification({ 0x42, 0x42 });
-    query.SetFlagQR(0);
-    query.SetFlagOPCode(0);
-    query.SetFlagAA(0);
-    query.SetFlagTC(0);
-    query.SetFlagRD(1);
-    query.SetFlagRA(0);
-    query.SetFlagZ(0);
-    query.SetFlagRCode(0);
-    query.SetNumberQuestion(1);
-    query.SetNumberAnswer(0);
-    query.SetNumberAuthority(0);
-    query.SetNumberAdditionalRR(0);
-    Botcraft::DNSQuestion question;
-    // SRV type
-    question.SetTypeCode(33);
-    question.SetClassCode(1);
-    question.SetNameLabels(Botcraft::Utilities::SplitString("_minecraft._tcp." + server_address, '.'));
-    query.SetQuestions({ question });
-
-    // Write the request and send it to DNS4EU
-    std::vector<unsigned char> encoded_query;
-    query.Write(encoded_query);
-    udp_socket.open(asio::ip::udp::v4());
-    asio::ip::udp::endpoint endpoint(asio::ip::make_address("86.54.11.100" /* unfiltered DNS4EU server */), 53);
-    udp_socket.send_to(asio::buffer(encoded_query), endpoint);
-
-    // Wait for the answer
-    std::vector<unsigned char> answer_buffer(512);
-    asio::ip::udp::endpoint sender_endpoint;
-    const size_t len = udp_socket.receive_from(asio::buffer(answer_buffer), sender_endpoint);
-
-    ProtocolCraft::ReadIterator iter = answer_buffer.begin();
-    size_t remaining = len;
-
-    // Read answer
-    Botcraft::DNSMessage answer;
-    answer.Read(iter, remaining);
-
-    // If there is an answer and it's a SRV one (as it should be)
-    if (answer.GetNumberAnswer() > 0
-        && answer.GetAnswers()[0].GetTypeCode() == 0x21)
-    {
-        Botcraft::DNSSrvData data;
-        auto iter2 = answer.GetAnswers()[0].GetRData().begin();
-        size_t len2 = answer.GetAnswers()[0].GetRDLength();
-        data.Read(iter2, len2);
-        server_ip = "";
-        for (int i = 0; i < data.GetNameLabels().size(); ++i)
-        {
-            server_ip += data.GetNameLabels()[i] + (i == data.GetNameLabels().size() - 1 ? "" : ".");
-        }
-        server_port = data.GetPort();
-
-        std::cout << "SRV DNS lookup successful!" << std::endl;
         return;
     }
-    std::cout << "SRV DNS lookup failed to find an address" << std::endl;
-
-    // If we are here either the port was given or the SRV failed
-    // In both cases we need to assume the given address is the correct one
-    server_port = (server_port == 0) ? 25565 : server_port;
-    server_ip = addressOnly;
-}
-
-void Server::PrepareForTransfer(const std::string& new_ip, const int new_port)
-{
-    is_next_connection_transfer = true;
-    transfer_ip = new_ip;
-    transfer_port = new_port;
+    const bool bracketed_ipv6 = server_address.find(']') != std::string::npos;
+    if (!bracketed_ipv6 && server_address.find(':') != last_colon)
+    {
+        return;
+    }
+    try
+    {
+        const int port = std::stoi(server_address.substr(last_colon + 1));
+        if (port > 0 && port < 65536)
+        {
+            server_port = static_cast<unsigned short>(port);
+            server_ip = server_address.substr(0, last_colon);
+            if (bracketed_ipv6 && server_ip.size() > 2 && server_ip.front() == '[' && server_ip.back() == ']')
+            {
+                server_ip = server_ip.substr(1, server_ip.size() - 2);
+            }
+        }
+    }
+    catch (const std::exception&)
+    {
+        // Not a port, the whole string is the host
+    }
 }
 
 BaseProxy* Server::GetNewMinecraftProxy()
 {
     std::lock_guard<std::mutex> lock(proxies_mutex);
     // Create a new proxy
-    std::unique_ptr<BaseProxy> proxy = std::make_unique<MinecraftProxy>(
-        io_context,
-        std::bind(&Server::PrepareForTransfer, this, std::placeholders::_1, std::placeholders::_2)
-    );
+    std::unique_ptr<BaseProxy> proxy = std::make_unique<MinecraftProxy>(io_context);
     proxies.push_back(std::move(proxy));
 
     return proxies.back().get();
@@ -355,8 +267,6 @@ void Server::InternalRenderLoop(GLFWwindow* window)
     // App parameters
     bool started = false;
     std::string local_port_str = std::to_string(client_port);
-    bool is_online = false;
-    std::string cache_key = "";
     std::string active_conf = "";
     std::set<std::string> conf_list = Conf::GetConfList();
     bool log_to_console = false;
@@ -364,219 +274,57 @@ void Server::InternalRenderLoop(GLFWwindow* window)
     bool log_to_text_file = false;
     bool log_to_bin_file = false;
     bool log_raw_bytes = false;
-    bool log_to_replay_file = false;
     float main_scale = ImGui::GetStyle()._MainScale;
     // Used to reset all the values before rescaling
     const ImGuiStyle style_copy = ImGui::GetStyle();
 
     // Display filter
-    const std::vector<std::string> connection_state_str = {
-        "Handshake",
-        "Status",
-        "Login",
-        "Play",
-#if PROTOCOL_VERSION > 763 /* > 1.20.1 */
-        "Configuration"
-#endif
-    };
-    int selected_connection_state = 3;
     const std::vector<std::string> direction_str = {
         "Server --> Client",
         "Client --> Server"
     };
     int selected_direction = 0;
-    std::vector<NameID> displayed;
-    std::vector<NameID> hidden;
+    std::vector<Protocol::PacketInfo> displayed;
+    std::vector<Protocol::PacketInfo> hidden;
 
     const auto on_conf_changed = [&]()
     {
         std::shared_lock<std::shared_mutex> lock(Conf::conf_mutex);
-        const ProtocolCraft::Json::Value conf = Conf::LoadConf();
+        const Json::Value conf = Conf::LoadConf();
 
         active_conf = Conf::active_conf.value();
-        is_online = conf.contains(Conf::online_key) && conf[Conf::online_key].is_bool() && conf[Conf::online_key].get<bool>();
-        cache_key = (conf.contains(Conf::account_cache_key_key) && conf[Conf::account_cache_key_key].is_string()) ? conf[Conf::account_cache_key_key].get_string() : "";
         log_to_console = conf.contains(Conf::console_log_key) && conf[Conf::console_log_key].is_bool() && conf[Conf::console_log_key].get<bool>();
         network_recap_to_console = conf.contains(Conf::network_recap_to_console_key) && conf[Conf::network_recap_to_console_key].is_bool() && conf[Conf::network_recap_to_console_key].get<bool>();
         log_to_text_file = conf.contains(Conf::text_file_log_key) && conf[Conf::text_file_log_key].is_bool() && conf[Conf::text_file_log_key].get<bool>();
         log_to_bin_file = conf.contains(Conf::binary_file_log_key) && conf[Conf::binary_file_log_key].is_bool() && conf[Conf::binary_file_log_key].get<bool>();
         log_raw_bytes = conf.contains(Conf::raw_bytes_log_key) && conf[Conf::raw_bytes_log_key].is_bool() && conf[Conf::raw_bytes_log_key].get<bool>();
-        log_to_replay_file = conf.contains(Conf::replay_log_key) && conf[Conf::replay_log_key].is_bool() && conf[Conf::replay_log_key].get<bool>();
 
-        const ConnectionState state = static_cast<ConnectionState>(selected_connection_state);
         displayed.clear();
         hidden.clear();
-        // Clientbound
-        if (selected_direction == 0)
+        // Packets ignored in the currently selected direction
+        Json::Value ignored_list = Json::Array();
+        const std::string& ignored_key = selected_direction == 0 ? Conf::ignored_clientbound_key : Conf::ignored_serverbound_key;
+        if (conf.contains(Conf::packets_key) && conf[Conf::packets_key].contains(ignored_key) && conf[Conf::packets_key][ignored_key].is_array())
         {
-            switch (state)
-            {
-            case ConnectionState::None:
-                return;
-            case ConnectionState::Handshake:
-                return;
-            case ConnectionState::Status:
-                for (const auto& s : PacketNameIdExtractor<AllClientboundStatusPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::status_key][Conf::ignored_clientbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-            case ConnectionState::Login:
-                for (const auto& s : PacketNameIdExtractor<AllClientboundLoginPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::login_key][Conf::ignored_clientbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-            case ConnectionState::Play:
-                for (const auto& s : PacketNameIdExtractor<AllClientboundPlayPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::play_key][Conf::ignored_clientbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-#if PROTOCOL_VERSION > 763 /* > 1.20.1 */
-            case ConnectionState::Configuration:
-                for (const auto& s : PacketNameIdExtractor<AllClientboundConfigurationPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::configuration_key][Conf::ignored_clientbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-#endif
-            }
+            ignored_list = conf[Conf::packets_key][ignored_key];
         }
-        // Serverbound
-        else
+        for (const auto& s : Protocol::AllPackets())
         {
-            switch (state)
+            bool ignored = false;
+            for (const auto& v : ignored_list.get_array())
             {
-            case ConnectionState::None:
-                return;
-            case ConnectionState::Handshake:
-                for (const auto& s : PacketNameIdExtractor<AllServerboundHandshakingPackets>::name_ids)
+                if ((v.is_number() && v.get_number<int>() == s.id) ||
+                    (v.is_string() && v.get_string() == s.name))
                 {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::handshaking_key][Conf::ignored_serverbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
+                    ignored = true;
+                    break;
                 }
-                break;
-            case ConnectionState::Status:
-                for (const auto& s : PacketNameIdExtractor<AllServerboundStatusPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::status_key][Conf::ignored_serverbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-            case ConnectionState::Login:
-                for (const auto& s : PacketNameIdExtractor<AllServerboundLoginPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::login_key][Conf::ignored_serverbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-            case ConnectionState::Play:
-                for (const auto& s : PacketNameIdExtractor<AllServerboundPlayPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::play_key][Conf::ignored_serverbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-#if PROTOCOL_VERSION > 763 /* > 1.20.1 */
-            case ConnectionState::Configuration:
-                for (const auto& s : PacketNameIdExtractor<AllServerboundConfigurationPackets>::name_ids)
-                {
-                    bool ignored = false;
-                    for (const auto& v : conf[Conf::configuration_key][Conf::ignored_serverbound_key].get_array())
-                    {
-                        if ((v.is_number() && v.get_number<int>() == s.id) ||
-                            (v.is_string() && v.get_string() == s.name))
-                        {
-                            ignored = true;
-                            break;
-                        }
-                    }
-                    (ignored ? hidden : displayed).push_back(s);
-                }
-                break;
-#endif
             }
+            (ignored ? hidden : displayed).push_back(s);
         }
 
-        std::sort(displayed.begin(), displayed.end(), [](const NameID& a, const NameID& b) { return a.name < b.name; });
-        std::sort(hidden.begin(), hidden.end(), [](const NameID& a, const NameID& b) { return a.name < b.name; });
+        std::sort(displayed.begin(), displayed.end(), [](const Protocol::PacketInfo& a, const Protocol::PacketInfo& b) { return a.name < b.name; });
+        std::sort(hidden.begin(), hidden.end(), [](const Protocol::PacketInfo& a, const Protocol::PacketInfo& b) { return a.name < b.name; });
 
         {
             // Triger a load config for all associated loggers
@@ -589,43 +337,18 @@ void Server::InternalRenderLoop(GLFWwindow* window)
     };
     const auto on_ignored_changed = [&]()
     {
-        const ConnectionState state = static_cast<ConnectionState>(selected_connection_state);
-        std::string conf_key = "";
-
-        switch (state)
-        {
-        case ConnectionState::None:
-            return;
-        case ConnectionState::Handshake:
-            conf_key = Conf::handshaking_key;
-            break;
-        case ConnectionState::Status:
-            conf_key = Conf::status_key;
-            break;
-        case ConnectionState::Login:
-            conf_key = Conf::login_key;
-            break;
-        case ConnectionState::Play:
-            conf_key = Conf::play_key;
-            break;
-#if PROTOCOL_VERSION > 763 /* > 1.20.1 */
-        case ConnectionState::Configuration:
-            conf_key = Conf::configuration_key;
-            break;
-#endif
-        }
-        std::sort(displayed.begin(), displayed.end(), [](const NameID& a, const NameID& b) { return a.name < b.name; });
-        std::sort(hidden.begin(), hidden.end(), [](const NameID& a, const NameID& b) { return a.name < b.name; });
+        std::sort(displayed.begin(), displayed.end(), [](const Protocol::PacketInfo& a, const Protocol::PacketInfo& b) { return a.name < b.name; });
+        std::sort(hidden.begin(), hidden.end(), [](const Protocol::PacketInfo& a, const Protocol::PacketInfo& b) { return a.name < b.name; });
 
         {
             std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-            ProtocolCraft::Json::Value conf = Conf::LoadConf();
+            Json::Value conf = Conf::LoadConf();
             std::vector<std::string_view> ignored_names(hidden.size());
             for (size_t i = 0; i < hidden.size(); ++i)
             {
                 ignored_names[i] = hidden[i].name;
             }
-            conf[conf_key][selected_direction == 0 ? Conf::ignored_clientbound_key : Conf::ignored_serverbound_key] = ignored_names;
+            conf[Conf::packets_key][selected_direction == 0 ? Conf::ignored_clientbound_key : Conf::ignored_serverbound_key] = ignored_names;
             Conf::SaveConf(conf);
         }
         {
@@ -687,7 +410,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                     ImGui::InputText("##conf_name", &active_conf);
                     if (ImGui::IsItemDeactivatedAfterEdit())
                     {
-                        const ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                        const Json::Value conf = Conf::LoadConf();
                         Conf::active_conf = active_conf;
                         conf_list.insert(active_conf);
                         Conf::SaveConf(conf);
@@ -715,7 +438,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                             if (ImGui::Selectable(s.c_str()))
                             {
                                 Conf::active_conf = s;
-                                const ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                                const Json::Value conf = Conf::LoadConf();
                                 Conf::SaveConf(conf);
                                 conf_changed = true;
                             }
@@ -741,7 +464,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                 if (ImGui::IsItemDeactivatedAfterEdit())
                 {
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::server_address_key] = server_address;
                     Conf::SaveConf(conf);
                     ResolveIpPortFromAddress();
@@ -777,41 +500,16 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                         local_port_str = std::to_string(client_port);
                     }
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::local_port_key] = client_port;
                     Conf::SaveConf(conf);
                 }
                 ImGui::EndDisabled();
 
-                if (ImGui::Checkbox("Authenticated", &is_online))
-                {
-                    std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
-                    conf[Conf::online_key] = is_online;
-                    Conf::SaveConf(conf);
-                }
-                ImGui::SameLine();
-                HelpMarker("If checked, you will have to connect with a valid Minecraft account");
-                if (is_online)
-                {
-                    ImGui::SameLine(0.0f, 10.0f);
-                    ImGui::TextUnformatted("Credentials cache key");
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-                    ImGui::InputTextWithHint("##cache_key", "Key used to select an account in the credentials cache file", &cache_key);
-                    if (ImGui::IsItemDeactivatedAfterEdit())
-                    {
-                        std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                        ProtocolCraft::Json::Value conf = Conf::LoadConf();
-                        conf[Conf::account_cache_key_key] = cache_key;
-                        Conf::SaveConf(conf);
-                    }
-                }
-
                 if (ImGui::Checkbox("Console", &log_to_console))
                 {
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::console_log_key] = log_to_console;
                     Conf::SaveConf(conf);
                 }
@@ -832,7 +530,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                 if (ImGui::Checkbox("Network recap", &network_recap_to_console))
                 {
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::network_recap_to_console_key] = network_recap_to_console;
                     Conf::SaveConf(conf);
                 }
@@ -853,7 +551,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                 if (ImGui::Checkbox("Raw bytes", &log_raw_bytes))
                 {
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::raw_bytes_log_key] = log_raw_bytes;
                     Conf::SaveConf(conf);
                 }
@@ -874,7 +572,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                 if (ImGui::Checkbox("Text file", &log_to_text_file))
                 {
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::text_file_log_key] = log_to_text_file;
                     Conf::SaveConf(conf);
                 }
@@ -895,33 +593,12 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                 if (ImGui::Checkbox("Binary file", &log_to_bin_file))
                 {
                     std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
+                    Json::Value conf = Conf::LoadConf();
                     conf[Conf::binary_file_log_key] = log_to_bin_file;
                     Conf::SaveConf(conf);
                 }
                 ImGui::SameLine();
                 HelpMarker("If checked, packets will be saved in a binary file that can be reimported into Sniffcraft GUI");
-                current_x = ImGui::GetItemRectMax().x;
-                // Stay on this line only if it fits
-                if (
-                    current_x +
-                    ImGui::CalcTextSize("Replay file").x +
-                    ImGui::CalcTextSize("(?)").x +
-                    ImGui::GetFrameHeight() +
-                    2 * ImGui::GetStyle().ItemSpacing.x < ImGui::GetContentRegionAvail().x
-                    )
-                {
-                    ImGui::SameLine(0.0f, 10.0f);
-                }
-                if (ImGui::Checkbox("Replay file", &log_to_replay_file))
-                {
-                    std::scoped_lock<std::shared_mutex> lock(Conf::conf_mutex);
-                    ProtocolCraft::Json::Value conf = Conf::LoadConf();
-                    conf[Conf::replay_log_key] = log_to_replay_file;
-                    Conf::SaveConf(conf);
-                }
-                ImGui::SameLine();
-                HelpMarker("If checked, the session will be saved as a replay file compatible with replay mod. /!\\ Current player will NOT be visible in it, as replay mod artificially adds some packets to display it.");
 
                 if (!started)
                 {
@@ -951,27 +628,6 @@ void Server::InternalRenderLoop(GLFWwindow* window)
 
             ImGui::SeparatorText("Display filter");
             {
-                if (ImGui::BeginCombo("##connection_state", connection_state_str[selected_connection_state].c_str(), ImGuiComboFlags_WidthFitPreview))
-                {
-                    for (size_t n = 0; n < connection_state_str.size(); ++n)
-                    {
-                        const bool is_selected = selected_connection_state == n;
-                        if (ImGui::Selectable(connection_state_str[n].c_str(), is_selected))
-                        {
-                            selected_connection_state = static_cast<int>(n);
-                            if (!is_selected)
-                            {
-                                on_conf_changed();
-                            }
-                        }
-                        if (is_selected)
-                        {
-                            ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
-                ImGui::SameLine();
                 if (ImGui::BeginCombo("##network_direction", direction_str[selected_direction].c_str(), ImGuiComboFlags_WidthFitPreview))
                 {
                     for (size_t n = 0; n < direction_str.size(); ++n)
@@ -1064,7 +720,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
             }
 
             ImGui::SeparatorText("Sessions");
-            std::tuple<std::shared_ptr<Packet>, ConnectionState, Endpoint> additional_ignored_packet = { nullptr, ConnectionState::None, Endpoint::Client };
+            std::pair<int, Endpoint> additional_ignored_packet = { -1, Endpoint::Client };
             {
                 std::scoped_lock<std::mutex> lock(loggers_mutex);
                 if (loggers.size() > 0 && ImGui::BeginTabBar("loggers", ImGuiTabBarFlags_AutoSelectNewTabs | ImGuiTabBarFlags_FittingPolicyScroll))
@@ -1078,7 +734,7 @@ void Server::InternalRenderLoop(GLFWwindow* window)
                         {
                             // If a packet ignore button has been pressed, save it to update display later
                             auto ignored_pressed = (*it)->Render();
-                            if (std::get<0>(ignored_pressed) != nullptr)
+                            if (ignored_pressed.first != -1)
                             {
                                 additional_ignored_packet = ignored_pressed;
                             }
@@ -1100,27 +756,24 @@ void Server::InternalRenderLoop(GLFWwindow* window)
             }
 
             // Update display afterward because the loggers are locked while rendered
-            const auto& [message, connection_state, origin] = additional_ignored_packet;
-            if (message != nullptr)
+            const auto& [ignored_id, origin] = additional_ignored_packet;
+            if (ignored_id != -1)
             {
-                const int current_selected_connection_state = selected_connection_state;
                 const int current_selected_direction = selected_direction;
-                // Switch display to the one matching the message
-                selected_connection_state = static_cast<int>(connection_state);
+                // Switch display to the one matching the packet
                 selected_direction = static_cast<int>(origin);
                 on_conf_changed();
-                // Add this message to hidden
-                hidden.push_back(NameID{ message->GetName(), message->GetId() });
+                // Add this packet to hidden
+                hidden.push_back(Protocol::PacketInfo{ ignored_id, Protocol::PacketName(ignored_id) });
                 for (int i = static_cast<int>(displayed.size()) - 1; i > -1; --i)
                 {
-                    if (displayed[i].id == message->GetId())
+                    if (displayed[i].id == ignored_id)
                     {
                         displayed.erase(displayed.begin() + i);
                     }
                 }
                 on_ignored_changed();
                 // Switch back to the previously selected display
-                selected_connection_state = current_selected_connection_state;
                 selected_direction = current_selected_direction;
                 on_conf_changed();
             }

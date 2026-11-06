@@ -1,68 +1,66 @@
 project(sniffcraft)
 
+# Everything related to the Beta 1.7.3 protocol: the packets definition (include/protocol),
+# the glue around it and the json implementation used to display packets
+set(sniffcraft_protocol_HDR
+    include/protocol/base_structs.h
+    include/protocol/base_types.h
+    include/protocol/constants.h
+    include/protocol/dimensions.h
+    include/protocol/inventory/item_stack.h
+    include/protocol/network_stream.h
+    include/protocol/numeric_structs.h
+    include/protocol/packet_data.h
+    include/protocol/packet_ids.h
+    include/protocol/packets.h
+    include/protocol/quantized_types.h
+
+    include/sniffcraft/Protocol.hpp
+    include/sniffcraft/Json/Json.hpp
+    include/sniffcraft/Json/RecursiveWrapper.hpp
+)
+
+set(sniffcraft_protocol_SRC
+    src/Protocol.cpp
+    src/Json/Json.cpp
+)
+
+add_library(sniffcraft_protocol STATIC ${sniffcraft_protocol_SRC} ${sniffcraft_protocol_HDR})
+set_property(TARGET sniffcraft_protocol PROPERTY CXX_STANDARD 17)
+target_include_directories(sniffcraft_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# packets.h includes some of its own headers with <> (e.g. <packet_ids.h>)
+target_include_directories(sniffcraft_protocol PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include/protocol")
+if(MSVC)
+    set_target_properties(sniffcraft_protocol PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")
+endif(MSVC)
+
 set(sniffcraft_PUBLIC_HDR
     include/sniffcraft/BaseProxy.hpp
-    include/sniffcraft/Compression.hpp
     include/sniffcraft/conf.hpp
     include/sniffcraft/Connection.hpp
     include/sniffcraft/DataProcessor.hpp
     include/sniffcraft/enums.hpp
     include/sniffcraft/Logger.hpp
     include/sniffcraft/LogItem.hpp
-    include/sniffcraft/MinecraftEncryptionDataProcessor.hpp
     include/sniffcraft/MinecraftProxy.hpp
     include/sniffcraft/NetworkRecapItem.hpp
-    include/sniffcraft/PacketUtilities.hpp
-    include/sniffcraft/ReplayModLogger.hpp
     include/sniffcraft/server.hpp
-
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/DNS/DNSMessage.hpp
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/DNS/DNSQuestion.hpp
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/DNS/DNSResourceRecord.hpp
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/DNS/DNSSrvData.hpp
-
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/Authentifier.hpp
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/AESEncrypter.hpp
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Network/Https.hpp
-    ../3rdparty/botcraft/botcraft/include/botcraft/Network/LastSeenMessagesTracker.hpp
-
-    ../3rdparty/botcraft/botcraft/include/botcraft/Utilities/Logger.hpp
-    ../3rdparty/botcraft/botcraft/private_include/botcraft/Utilities/StringUtilities.hpp
-
-    include/sniffcraft/Zip/DosTime.hpp
-    include/sniffcraft/Zip/ZeptoZip.hpp
 )
 
 set(sniffcraft_SRC
     src/BaseProxy.cpp
-    src/Compression.cpp
     src/conf.cpp
     src/Connection.cpp
     src/Logger.cpp
-    src/MinecraftEncryptionDataProcessor.cpp
     src/MinecraftProxy.cpp
-    src/ReplayModLogger.cpp
     src/server.cpp
     src/main.cpp
-
-    src/Zip/ZeptoZip.cpp
-
-    ../3rdparty/botcraft/botcraft/src/Network/Authentifier.cpp
-    ../3rdparty/botcraft/botcraft/src/Network/AESEncrypter.cpp
-    ../3rdparty/botcraft/botcraft/src/Network/Https.cpp
-    ../3rdparty/botcraft/botcraft/src/Network/LastSeenMessagesTracker.cpp
-    ../3rdparty/botcraft/botcraft/src/Utilities/Logger.cpp
-    ../3rdparty/botcraft/botcraft/src/Utilities/StringUtilities.cpp
 )
 
 # To have a nice files structure in Visual Studio
 if(MSVC)
     foreach(source IN LISTS sniffcraft_PUBLIC_HDR)
         get_filename_component(source_path_header "${source}" PATH)
-        string(REPLACE "../3rdparty/botcraft/botcraft/private_include/botcraft/Network" "Header Files/public/botcraft" source_path_header "${source_path_header}")
-        string(REPLACE "../3rdparty/botcraft/botcraft/private_include/botcraft/Utilities" "Header Files/public/botcraft" source_path_header "${source_path_header}")
-        string(REPLACE "../3rdparty/botcraft/botcraft/include/botcraft/Utilities" "Header Files/public/botcraft" source_path_header "${source_path_header}")
-        string(REPLACE "../3rdparty/botcraft/botcraft/include/botcraft/Network" "Header Files/public/botcraft" source_path_header "${source_path_header}")
         string(REPLACE "include/sniffcraft" "Header Files/public" source_path_header "${source_path_header}")
         string(REPLACE "/" "\\" source_path_msvc "${source_path_header}")
         source_group("${source_path_msvc}" FILES "${source}")
@@ -70,7 +68,6 @@ if(MSVC)
 
     foreach(source IN LISTS sniffcraft_SRC)
         get_filename_component(source_path "${source}" PATH)
-        string(REPLACE "../3rdparty/botcraft/botcraft/src" "Source Files/botcraft" source_path "${source_path}")
         string(REPLACE "src" "Source Files" source_path "${source_path}")
         string(REPLACE "/" "\\" source_path_msvc "${source_path}")
         source_group("${source_path_msvc}" FILES "${source}")
@@ -105,8 +102,6 @@ else()
 endif(MSVC)
 
 target_include_directories(${PROJECT_NAME} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_include_directories(${PROJECT_NAME} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/botcraft/botcraft/private_include")
-target_include_directories(${PROJECT_NAME} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../3rdparty/botcraft/botcraft/include")
 
 if (MSVC)
     set_target_properties(${PROJECT_NAME} PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -116,30 +111,11 @@ endif(MSVC)
 target_link_libraries(${PROJECT_NAME} PUBLIC asio)
 target_compile_definitions(${PROJECT_NAME} PUBLIC ASIO_STANDALONE)
 
-# Add Zlib
-target_link_libraries(${PROJECT_NAME} PUBLIC ZLIB::ZLIB)
-
-# Add OpenSSL
-if(SNIFFCRAFT_WITH_ENCRYPTION)
-    target_link_libraries(${PROJECT_NAME} PUBLIC OpenSSL::SSL)
-    target_link_libraries(${PROJECT_NAME} PUBLIC OpenSSL::Crypto)
-    target_compile_definitions(${PROJECT_NAME} PUBLIC USE_ENCRYPTION=1)
-    if(WIN32)
-        target_link_libraries(${PROJECT_NAME} PUBLIC crypt32)
-    endif()
-    if(APPLE)
-        target_link_libraries(${PROJECT_NAME} PUBLIC
-            "-framework Security"
-            "-framework CoreFoundation"
-        )
-    endif()
-endif(SNIFFCRAFT_WITH_ENCRYPTION)
-
 # Add threads support
 target_link_libraries(${PROJECT_NAME} PUBLIC Threads::Threads)
 
-# Add protocolCraft
-target_link_libraries(${PROJECT_NAME} PUBLIC protocolCraft)
+# Add the Beta 1.7.3 protocol
+target_link_libraries(${PROJECT_NAME} PUBLIC sniffcraft_protocol)
 
 if (SNIFFCRAFT_WITH_GUI)
 	target_link_libraries(${PROJECT_NAME} PRIVATE glfw ${OPENGL_LIBRARIES} imgui)

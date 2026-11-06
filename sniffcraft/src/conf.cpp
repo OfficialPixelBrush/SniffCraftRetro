@@ -17,16 +17,9 @@ const std::string Conf::local_port_key = "LocalPort";
 const std::string Conf::text_file_log_key = "LogToTxtFile";
 const std::string Conf::binary_file_log_key = "LogToBinFile";
 const std::string Conf::console_log_key = "LogToConsole";
-const std::string Conf::replay_log_key = "LogToReplay";
 const std::string Conf::raw_bytes_log_key = "LogRawBytes";
-const std::string Conf::online_key = "Online";
 const std::string Conf::network_recap_to_console_key = "NetworkRecapToConsole";
-const std::string Conf::account_cache_key_key = "MicrosoftAccountCacheKey";
-const std::string Conf::handshaking_key = "Handshaking";
-const std::string Conf::status_key = "Status";
-const std::string Conf::login_key = "Login";
-const std::string Conf::configuration_key = "Configuration";
-const std::string Conf::play_key = "Play";
+const std::string Conf::packets_key = "Packets";
 const std::string Conf::ignored_clientbound_key = "ignored_clientbound";
 const std::string Conf::ignored_serverbound_key = "ignored_serverbound";
 const std::string Conf::detailed_clientbound_key = "detailed_clientbound";
@@ -44,11 +37,11 @@ std::optional<std::string> Conf::active_conf = std::nullopt;
 
 std::shared_mutex Conf::conf_mutex;
 
-ProtocolCraft::Json::Value Conf::LoadConf()
+Json::Value Conf::LoadConf()
 {
-    const ProtocolCraft::Json::Value main_json = LoadConfFile();
+    const Json::Value main_json = LoadConfFile();
 
-    ProtocolCraft::Json::Value json = main_json[active_conf.value()];
+    Json::Value json = main_json[active_conf.value()];
 
     // Set default values if missing
     if (!json.contains(server_address_key))
@@ -61,39 +54,25 @@ ProtocolCraft::Json::Value Conf::LoadConf()
         json[binary_file_log_key] = false;
     if (!json.contains(console_log_key))
         json[console_log_key] = true;
-    if (!json.contains(replay_log_key))
-        json[replay_log_key] = false;
     if (!json.contains(raw_bytes_log_key))
         json[raw_bytes_log_key] = false;
-    if (!json.contains(online_key))
-        json[online_key] = false;
-    if (!json.contains(account_cache_key_key))
-        json[account_cache_key_key] = "";
     if (!json.contains(network_recap_to_console_key))
         json[network_recap_to_console_key] = false;
-    ProtocolCraft::Json::Value packet_lists = {
-        { ignored_clientbound_key, ProtocolCraft::Json::Array() },
-        { ignored_serverbound_key, ProtocolCraft::Json::Array() },
-        { detailed_clientbound_key, ProtocolCraft::Json::Array() },
-        { detailed_serverbound_key, ProtocolCraft::Json::Array() },
+    Json::Value packet_lists = {
+        { ignored_clientbound_key, Json::Array() },
+        { ignored_serverbound_key, Json::Array() },
+        { detailed_clientbound_key, Json::Array() },
+        { detailed_serverbound_key, Json::Array() },
     };
-    if (!json.contains(handshaking_key))
-        json[handshaking_key] = packet_lists;
-    if (!json.contains(status_key))
-        json[status_key] = packet_lists;
-    if (!json.contains(login_key))
-        json[login_key] = packet_lists;
-    if (!json.contains(play_key))
-        json[play_key] = packet_lists;
-    if (!json.contains(configuration_key))
-        json[configuration_key] = packet_lists;
+    if (!json.contains(packets_key))
+        json[packets_key] = packet_lists;
 
     return json;
 }
 
-void Conf::SaveConf(const ProtocolCraft::Json::Value& conf)
+void Conf::SaveConf(const Json::Value& conf)
 {
-    ProtocolCraft::Json::Value main_json = LoadConfFile();
+    Json::Value main_json = LoadConfFile();
 
     main_json[active_conf_key] = active_conf.value();
     main_json[active_conf.value()] = conf;
@@ -120,7 +99,7 @@ std::time_t Conf::GetModifiedTimestamp()
 
 std::set<std::string> Conf::GetConfList()
 {
-    ProtocolCraft::Json::Value json = LoadConfFile();
+    Json::Value json = LoadConfFile();
 
     std::set<std::string> output;
     for (const auto& [k, v] : json.get_object())
@@ -136,7 +115,7 @@ std::set<std::string> Conf::GetConfList()
 
 void Conf::DeleteConf(const std::string& name)
 {
-    ProtocolCraft::Json::Value json = LoadConfFile();
+    Json::Value json = LoadConfFile();
 
     json.get_object().erase(name);
 
@@ -150,7 +129,7 @@ void Conf::DeleteConf(const std::string& name)
     file.close();
 }
 
-ProtocolCraft::Json::Value Conf::LoadConfFile()
+Json::Value Conf::LoadConfFile()
 {
     if (conf_path.empty())
     {
@@ -161,7 +140,7 @@ ProtocolCraft::Json::Value Conf::LoadConfFile()
     if (!std::filesystem::exists(conf_path))
     {
         std::ofstream outfile(conf_path, std::ios::out);
-        outfile << ProtocolCraft::Json::Value().Dump(4);
+        outfile << Json::Value().Dump(4);
     }
 
     std::ifstream file = std::ifstream(conf_path, std::ios::in);
@@ -169,13 +148,13 @@ ProtocolCraft::Json::Value Conf::LoadConfFile()
     {
         throw std::runtime_error("Error trying to open conf file at: " + conf_path);
     }
-    ProtocolCraft::Json::Value json;
+    Json::Value json;
     file >> json;
     file.close();
 
     if (!json.is_object())
     {
-        json = ProtocolCraft::Json::Object();
+        json = Json::Object();
     }
 
     // Convert old conf format
@@ -199,7 +178,7 @@ ProtocolCraft::Json::Value Conf::LoadConfFile()
 
     if (!json.contains(active_conf.value()))
     {
-        json[active_conf.value()] = ProtocolCraft::Json::Value();
+        json[active_conf.value()] = Json::Value();
     }
 
     return json;

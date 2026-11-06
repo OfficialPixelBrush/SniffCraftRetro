@@ -4,106 +4,31 @@
     "LogToTxtFile": true,
     "LogToBinFile": false,
     "LogToConsole": true,
-    "LogToReplay": false,
     "LogRawBytes": false,
-    "Online": false,
     "NetworkRecapToConsole": false,
-    "MicrosoftAccountCacheKey": "",
-    "Handshaking": {
-        "ignored_clientbound" : [
-
+    "Packets": {
+        "ignored_clientbound": [
+            "KeepAlive",
+            "SetTime",
+            "ChunkData",
+            "SetChunkVisibility",
+            "SetMultipleBlocks",
+            "EntityMovement",
+            "EntityPosition",
+            "EntityRotation",
+            "EntityPositionAndRotation",
+            "TeleportEntity",
+            "EntityVelocity",
+            "EntityMetadata"
         ],
-        "ignored_serverbound" : [
-
+        "ignored_serverbound": [
+            "KeepAlive",
+            "PlayerMovement",
+            "PlayerPosition",
+            "PlayerRotation",
+            "PlayerPositionAndRotation"
         ],
-        "detailed_clientbound": [
-
-        ],
-        "detailed_serverbound": [
-
-        ]
-    },
-    "Status": {
-        "ignored_clientbound" : [
-
-        ],
-        "ignored_serverbound" : [
-
-        ],
-        "detailed_clientbound": [
-
-        ],
-        "detailed_serverbound": [
-
-        ]
-    },
-    "Configuration": {
-        "ignored_clientbound" : [
-
-        ],
-        "ignored_serverbound" : [
-
-        ],
-        "detailed_clientbound": [
-
-        ],
-        "detailed_serverbound": [
-
-        ]
-    },
-    "Login": {
-        "ignored_clientbound" : [
-
-        ],
-        "ignored_serverbound" : [
-
-        ],
-        "detailed_clientbound": [
-
-        ],
-        "detailed_serverbound": [
-
-        ]
-    },
-    "Play": {
-        "ignored_clientbound" : [
-            "Move Entity Pos",
-            "Move Entity PosRot",
-            "Move Entity Rot",
-            "Entity Event",
-            "Player Position",
-            "Rotate Head",
-            "Level Chunk",
-            "Section Blocks Update",
-            "Light Update",
-            "Forget Level Chunk",
-            "Set Entity Data",
-            "Update Attributes",
-            "Add Entity",
-            "Set Entity Motion",
-            "Teleport Entity",
-            "Set Equipment",
-            "Add Mob",
-            "Remove Entity",
-            "Block Update",
-            "Animate",
-            "Keep Alive",
-            "Set Time",
-            "Block Event",
-            "Sound"
-        ],
-        "ignored_serverbound" : [
-            "Move Player Pos",
-            "Move Player PosRot",
-            "Move Player Rot",
-            "Move Player Status Only",
-            "Keep Alive"
-        ],
-        "detailed_clientbound": [
-
-        ],
-        "detailed_serverbound": [
-
-        ]
+        "detailed_clientbound": [],
+        "detailed_serverbound": []
     }
 }
